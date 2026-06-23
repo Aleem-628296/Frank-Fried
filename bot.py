@@ -98,32 +98,17 @@ def handle_customer_flow(phone, text, button_id=None):
     state = get_state(phone)
     text_lower = text.lower().strip() if text else ""
 
-    # 1. GREETING
-    if state["step"] == "greeting" or text_lower in ["hi", "hello", "start", "menu"]:
-        set_state(phone, "greeting")
-        send_buttons(phone, "Welcome! 🍛", "How can we serve you today?", "Powered by Aleem Tech", [
-            {"id": "view_menu", "title": "🍛 View Menu"},
-            {"id": "place_order", "title": "🛒 Place Order"}
-        ])
-
-    # 2. MENU
-    elif button_id == "view_menu":
+    # 1. HANDLE BUTTON CLICKS FIRST (Priority)
+    if button_id == "view_menu":
         send_image(phone, "https://images.pexels.com/photos/1640772/pexels-photo-1640772.jpeg?auto=compress&cs=tinysrgb&w=800", 
                    "🍛 *OUR MENU*\n• Fried Rice & Chicken - GHS 35\n• Fried Rice & Fish - GHS 30\n• Jollof & Beef - GHS 35\n• Banku & Tilapia - GHS 40\n\nReply 'HI' to order.")
+        return
 
-    # 3. ORDER TAKING
-    elif button_id == "place_order" or (state["step"] == "greeting" and text_lower == "place order"):
+    elif button_id == "place_order":
         set_state(phone, "taking_order")
         send_text(phone, "📝 *PLACE YOUR ORDER*\n\nReply with what you want.\n*Example:* 2 Fried Rice & Chicken, 1 Jollof & Beef.")
+        return
 
-    elif state["step"] == "taking_order":
-        set_state(phone, "ask_location", order=text)
-        send_buttons(phone, "Pickup or Delivery?", "How will you get your food?", "", [
-            {"id": "pickup", "title": "🏃 Pickup"},
-            {"id": "delivery", "title": "🛵 Delivery"}
-        ])
-
-    # 4. LOCATION
     elif button_id == "pickup":
         set_state(phone, "ask_payment", location="Pickup at shop")
         send_buttons(phone, "Payment Method", "How would you like to pay?", "", [
@@ -131,20 +116,13 @@ def handle_customer_flow(phone, text, button_id=None):
             {"id": "momo_delivery", "title": "📱 MoMo on Delivery"},
             {"id": "momo_now", "title": "💳 Pay Now (MoMo)"}
         ])
+        return
 
     elif button_id == "delivery":
         set_state(phone, "ask_location_text")
         send_text(phone, "📍 *DELIVERY LOCATION*\n\nPlease type your location or landmark.\n*Example:* East Legon, near the American House.")
+        return
 
-    elif state["step"] == "ask_location_text":
-        set_state(phone, "ask_payment", location=text)
-        send_buttons(phone, "Payment Method", "How would you like to pay?", "", [
-            {"id": "cash", "title": "💵 Cash on Delivery"},
-            {"id": "momo_delivery", "title": "📱 MoMo on Delivery"},
-            {"id": "momo_now", "title": "💳 Pay Now (MoMo)"}
-        ])
-
-    # 5. PAYMENT & ORDER COMPLETE
     elif button_id in ["cash", "momo_delivery", "momo_now"]:
         state = get_state(phone)
         order_id = save_order(phone, state["order"], state["location"], button_id, "35")
@@ -163,6 +141,30 @@ def handle_customer_flow(phone, text, button_id=None):
             send_text(phone, f"✅ *Order #{order_id} Received!*\n\nPlease have GHS 35 ready for the rider/driver. The boss will call you shortly. Thank you!")
         
         set_state(phone, "greeting")
+        return
+
+    # 2. HANDLE TEXT MESSAGES (State-based)
+    if state["step"] == "greeting" or text_lower in ["hi", "hello", "start", "menu"]:
+        set_state(phone, "greeting")
+        send_buttons(phone, "Welcome! 🍛", "How can we serve you today?", "Powered by Aleem Tech", [
+            {"id": "view_menu", "title": "🍛 View Menu"},
+            {"id": "place_order", "title": "🛒 Place Order"}
+        ])
+
+    elif state["step"] == "taking_order":
+        set_state(phone, "ask_location", order=text)
+        send_buttons(phone, "Pickup or Delivery?", "How will you get your food?", "", [
+            {"id": "pickup", "title": "🏃 Pickup"},
+            {"id": "delivery", "title": "🛵 Delivery"}
+        ])
+
+    elif state["step"] == "ask_location_text":
+        set_state(phone, "ask_payment", location=text)
+        send_buttons(phone, "Payment Method", "How would you like to pay?", "", [
+            {"id": "cash", "title": "💵 Cash on Delivery"},
+            {"id": "momo_delivery", "title": "📱 MoMo on Delivery"},
+            {"id": "momo_now", "title": "💳 Pay Now (MoMo)"}
+        ])
 
     else:
         send_text(phone, "I didn't catch that. Reply 'HI' to see the menu.")
