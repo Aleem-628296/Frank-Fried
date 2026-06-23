@@ -141,10 +141,10 @@ def handle_customer_flow(phone, text, button_id=None):
     # 5. PAYMENT
     def ask_payment(phone):
         send_buttons(phone, "Payment Method", "How would you like to pay?", "", [
-            {"id": "cash", "title": "💵 Cash on Delivery"},
-            {"id": "momo_delivery", "title": "📱 MoMo on Delivery"},
-            {"id": "momo_now", "title": " Pay Now (MoMo)"}
-        ])
+    {"id": "cash", "title": "💵 Cash on Delivery"},
+    {"id": "momo_delivery", "title": "📱 MoMo on Delivery"},
+    {"id": "momo_now", "title": " Pay Now (MoMo)"}
+])
 
     elif button_id in ["cash", "momo_delivery", "momo_now"]:
         state = get_state(phone)
