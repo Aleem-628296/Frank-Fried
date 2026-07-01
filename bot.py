@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import requests
+import threading
 from datetime import datetime
 from fastapi import FastAPI, Request, Response
 from dotenv import load_dotenv
@@ -9,209 +10,321 @@ load_dotenv()
 
 app = FastAPI()
 
-# --- BUSINESS CONFIGURATION ---
+# --- FRANK FRIED KITCHEN CONFIGURATION ---
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 META_TOKEN = os.getenv("META_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
-OWNER_NUMBER = os.getenv("OWNER_NUMBER")
-MOMO_NUMBER = os.getenv("MOMO_NUMBER")
-MOMO_NAME = os.getenv("MOMO_NAME")
+OWNER_NUMBER = os.getenv("OWNER_NUMBER")  
+MOMO_NUMBER = os.getenv("MOMO_NUMBER")    
+MOMO_NAME = os.getenv("MOMO_NAME")        ohia
 API_VERSION = "v19.0"
+
+# --- FRANK FRIED KITCHEN MENU ---
+MENU = {
+    "fried rice": 30,
+    "assorted fried rice": 60,
+    "jollof rice": 30,
+    "assorted jollof rice": 60,
+    "waakye with chicken": 30,
+    "waakye with fish": 30,
+    "waakye with egg": 20,
+    "spaghetti with chicken": 30,
+    "assorted spaghetti": 40,
+    "indomie with chicken": 30,
+    "assorted indomie": 50,
+    "plain rice with fish": 30,
+    "plain rice with chicken": 30,
+    "plain rice with egg": 20
+}
 
 # --- SQLITE INITIALIZATION ---
 def init_db():
     conn = sqlite3.connect('orders.db', check_same_thread=False)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS orders 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT, items TEXT, location TEXT, 
-                  payment_method TEXT, total_price TEXT, status TEXT DEFAULT 'new', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS orders
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT, item TEXT, 
+                  quantity INTEGER, delivery_type TEXT, location TEXT, 
+                  payment_method TEXT, total_price TEXT, status TEXT,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS user_state
+                 (phone TEXT PRIMARY KEY, state TEXT, data TEXT)''')
     conn.commit()
     conn.close()
-init_db()
 
-# --- DATABASE HELPERS ---
-def save_order(phone, items, location, payment_method, total_price):
-    conn = sqlite3.connect('orders.db')
+def get_db():
+    conn = sqlite3.connect('orders.db', timeout=10, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def save_state(phone, state, data=""):
+    conn = get_db()
     c = conn.cursor()
-    c.execute("INSERT INTO orders (phone, items, location, payment_method, total_price) VALUES (?, ?, ?, ?, ?)",
-              (phone, items, location, payment_method, total_price))
-    order_id = c.lastrowid
+    c.execute("INSERT OR REPLACE INTO user_state (phone, state, data) VALUES (?, ?, ?)",
+              (phone, state, data))
     conn.commit()
     conn.close()
-    return order_id
-
-def get_daily_summary():
-    conn = sqlite3.connect('orders.db')
-    c = conn.cursor()
-    today = datetime.now().strftime("%Y-%m-%d")
-    c.execute("SELECT COUNT(*), SUM(CAST(total_price AS REAL)) FROM orders WHERE created_at LIKE ?", (f"%{today}%",))
-    total_orders, total_revenue = c.fetchone()
-    conn.close()
-    return total_orders or 0, total_revenue or 0.0
-
-# --- META API HELPERS ---
-def send_meta_payload(phone, payload):
-    url = f"https://graph.facebook.com/{API_VERSION}/{PHONE_NUMBER_ID}/messages"
-    headers = {"Authorization": f"Bearer {META_TOKEN}", "Content-Type": "application/json"}
-    requests.post(url, headers=headers, json=payload)
-
-def send_text(phone, text):
-    send_meta_payload(phone, {"messaging_product": "whatsapp", "to": phone, "type": "text", "text": {"body": text}})
-
-def send_image(phone, image_url, caption):
-    send_meta_payload(phone, {"messaging_product": "whatsapp", "to": phone, "type": "image", "image": {"link": image_url, "caption": caption}})
-
-def send_buttons(phone, header, body, footer, buttons_list):
-    payload = {
-        "messaging_product": "whatsapp", "to": phone, "type": "interactive",
-        "interactive": {
-            "type": "button", "header": {"type": "text", "text": header}, "body": {"text": body},
-            "footer": {"text": footer}, "action": {"buttons": [{"type": "reply", "reply": btn} for btn in buttons_list]}
-        }
-    }
-    send_meta_payload(phone, payload)
-
-# --- CONVERSATION STATE ---
-user_states = {}
 
 def get_state(phone):
-    return user_states.get(phone, {"step": "greeting", "order": "", "location": ""})
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT state, data FROM user_state WHERE phone=?", (phone,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return row['state'], row['data']
+    return None, None
 
-def set_state(phone, step, order=None, location=None):
-    state = get_state(phone)
-    state["step"] = step
-    if order is not None: state["order"] = order
-    if location is not None: state["location"] = location
-    user_states[phone] = state
+def clear_state(phone):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM user_state WHERE phone=?", (phone,))
+    conn.commit()
+    conn.close()
 
-# --- OWNER COMMANDS ---
-def handle_owner_command(phone, text):
+# --- WHATSAPP API ---
+def send_whatsapp_message(phone, message):
+    url = f"https://graph.facebook.com/{API_VERSION}/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {META_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "messaging_product": "whatsapp",
+        "to": phone,
+        "type": "text",
+        "text": {"body": message}
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Error sending message: {e}")
+
+# --- ORDER PROCESSING ---
+def process_message(phone, text):
     text_lower = text.lower().strip()
-    if text_lower == "summary":
-        orders, revenue = get_daily_summary()
-        send_text(OWNER_NUMBER, f"📊 *DAILY SUMMARY*\nTotal Orders: {orders}\nTotal Revenue: GHS {revenue:.2f}")
-    else:
-        send_text(OWNER_NUMBER, "I only understand 'summary' right now, Boss.")
-
-# --- CUSTOMER FLOW ---
-def handle_customer_flow(phone, text, button_id=None):
-    state = get_state(phone)
-    text_lower = text.lower().strip() if text else ""
-
-    # 1. HANDLE BUTTON CLICKS FIRST (Priority)
-    if button_id == "view_menu":
-        send_image(phone, "https://images.pexels.com/photos/1640772/pexels-photo-1640772.jpeg?auto=compress&cs=tinysrgb&w=800", 
-                   "🍛 *OUR MENU*\n• Fried Rice & Chicken - GHS 35\n• Fried Rice & Fish - GHS 30\n• Jollof & Beef - GHS 35\n• Banku & Tilapia - GHS 40\n\nReply 'HI' to order.")
-        return
-
-    elif button_id == "place_order":
-        set_state(phone, "taking_order")
-        send_text(phone, "📝 *PLACE YOUR ORDER*\n\nReply with what you want.\n*Example:* 2 Fried Rice & Chicken, 1 Jollof & Beef.")
-        return
-
-    elif button_id == "pickup":
-        set_state(phone, "ask_payment", location="Pickup at shop")
-        send_buttons(phone, "Payment Method", "How would you like to pay?", "", [
-            {"id": "cash", "title": "💵 Cash on Delivery"},
-            {"id": "momo_delivery", "title": "📱 MoMo on Delivery"},
-            {"id": "momo_now", "title": "💳 Pay Now (MoMo)"}
-        ])
-        return
-
-    elif button_id == "delivery":
-        set_state(phone, "ask_location_text")
-        send_text(phone, "📍 *DELIVERY LOCATION*\n\nPlease type your location or landmark.\n*Example:* East Legon, near the American House.")
-        return
-
-    elif button_id in ["cash", "momo_delivery", "momo_now"]:
-        state = get_state(phone)
-        order_id = save_order(phone, state["order"], state["location"], button_id, "35")
+    state, data = get_state(phone)
+    
+    # Owner verification command
+    if phone == OWNER_NUMBER and text_lower.startswith("verified"):
+        parts = text_lower.split()
+        if len(parts) >= 2:
+            customer_phone = parts[1]
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("UPDATE orders SET status='confirmed' WHERE phone=? AND status='pending'",
+                      (customer_phone,))
+            conn.commit()
+            conn.close()
+            send_whatsapp_message(OWNER_NUMBER, f"✅ Payment verified for {customer_phone}. Order confirmed.")
+            send_whatsapp_message(customer_phone, "✅ Payment confirmed. Your order is being prepared. Thank you!")
+            return
+    
+    # Owner summary command
+    if phone == OWNER_NUMBER and text_lower == "summary":
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM orders WHERE status='pending'")
+        pending = c.fetchall()
+        conn.close()
         
-        boss_msg = (f"🔔 *NEW ORDER #{order_id}!*\n\n"
-                    f"🍛 *Items:* {state['order']}\n"
-                    f"📍 *Location:* {state['location']}\n"
-                    f"💰 *Payment:* {button_id.replace('_', ' ').title()}\n"
-                    f"📞 *Customer:* {phone}")
+        if not pending:
+            send_whatsapp_message(OWNER_NUMBER, "No pending orders.")
+            return
         
-        send_text(OWNER_NUMBER, boss_msg)
-
-        if button_id == "momo_now":
-            send_text(phone, f"✅ *Order #{order_id} Received!*\n\nPlease send GHS 35 to MoMo:\n*{MOMO_NUMBER}* ({MOMO_NAME})\n\nShow the transaction alert to the rider/driver. Thank you!")
+        summary = "📋 PENDING ORDERS:\n\n"
+        for order in pending:
+            summary += f"ID: {order['id']}\n"
+            summary += f"Customer: {order['phone']}\n"
+            summary += f"Item: {order['item']} x{order['quantity']}\n"
+            summary += f"Total: GHS {order['total_price']}\n"
+            summary += f"Delivery: {order['delivery_type']} to {order['location']}\n"
+            summary += f"Payment: {order['payment_method']}\n"
+            summary += f"Status: {order['status']}\n"
+            summary += f"Time: {order['created_at']}\n"
+            summary += "---\n"
+        
+        send_whatsapp_message(OWNER_NUMBER, summary)
+        return
+    
+    # New customer starts
+    if state is None:
+        menu_text = "🍽️ *FRANK FRIED KITCHEN MENU*\n\n"
+        for item, price in MENU.items():
+            menu_text += f"• {item.title()} - GHS {price}\n"
+        menu_text += "\n📍 Location: Ben-Barquarye street (Old St. Francis)\n"
+        menu_text += "🕐 Hours: 7:00am - 10:00pm (Mon-Sat)\n"
+        menu_text += "🚚 Delivery: 8:00am - 3:00pm\n\n"
+        menu_text += "What would you like to order? (e.g., 'waakye with chicken')"
+        send_whatsapp_message(phone, menu_text)
+        save_state(phone, "awaiting_item")
+        return
+    
+    # Customer selecting item
+    if state == "awaiting_item":
+        # Find matching menu item
+        found_item = None
+        for menu_item in MENU.keys():
+            if menu_item in text_lower:
+                found_item = menu_item
+                break
+        
+        if found_item:
+            save_state(phone, "awaiting_quantity", found_item)
+            send_whatsapp_message(phone, f"How many {found_item.title()} would you like?")
         else:
-            send_text(phone, f"✅ *Order #{order_id} Received!*\n\nPlease have GHS 35 ready for the rider/driver. The boss will call you shortly. Thank you!")
-        
-        set_state(phone, "greeting")
+            send_whatsapp_message(phone, "Sorry, I didn't find that item. Please choose from the menu above.")
+        return
+    
+    # Customer entering quantity
+    if state == "awaiting_quantity":
+        try:
+            quantity = int(text)
+            if quantity < 1:
+                send_whatsapp_message(phone, "Please enter a number greater than 0.")
+                return
+            
+            item = data
+            price = MENU[item]
+            total = quantity * price
+            
+            save_state(phone, "awaiting_delivery", f"{item}|{quantity}|{total}")
+            send_whatsapp_message(phone, "Is this for Pickup or Delivery?")
+        except ValueError:
+            send_whatsapp_message(phone, "Please enter a valid number.")
+        return
+    
+    # Customer selecting delivery type
+    if state == "awaiting_delivery":
+        if "pickup" in text_lower:
+            item, quantity, total = data.split("|")
+            save_state(phone, "awaiting_payment", f"{item}|{quantity}|{total}|pickup|N/A")
+            send_whatsapp_message(phone, "How would you like to pay? (MoMo or Cash)")
+        elif "delivery" in text_lower:
+            save_state(phone, "awaiting_location", f"{data}|delivery")
+            send_whatsapp_message(phone, "Please enter your delivery location.")
+        else:
+            send_whatsapp_message(phone, "Please reply with 'Pickup' or 'Delivery'.")
+        return
+    
+    # Customer entering delivery location
+    if state == "awaiting_location":
+        item, quantity, total, delivery_type = data.split("|")
+        location = text
+        save_state(phone, "awaiting_payment", f"{item}|{quantity}|{total}|{delivery_type}|{location}")
+        send_whatsapp_message(phone, "How would you like to pay? (MoMo or Cash)")
+        return
+    
+    # Customer selecting payment method
+    if state == "awaiting_payment":
+        if "momo" in text_lower or "mobile money" in text_lower:
+            item, quantity, total, delivery_type, location = data.split("|")
+            save_state(phone, "awaiting_momo_confirmation", data)
+            
+            momo_msg = f"📱 *PAYMENT DETAILS*\n\n"
+            momo_msg += f"Item: {item.title()} x{quantity}\n"
+            momo_msg += f"Total: GHS {total}\n"
+            momo_msg += f"Delivery: {delivery_type}"
+            if location != "N/A":
+                momo_msg += f" to {location}"
+            momo_msg += f"\n\n💳 Send GHS {total} to:\n"
+            momo_msg += f"*MTN MoMo:* {MOMO_NUMBER}\n"
+            momo_msg += f"*Name:* {MOMO_NAME}\n\n"
+            momo_msg += "Reply YES once you've sent the money."
+            send_whatsapp_message(phone, momo_msg)
+        elif "cash" in text_lower:
+            item, quantity, total, delivery_type, location = data.split("|")
+            
+            if delivery_type == "delivery":
+                send_whatsapp_message(phone, "Cash payment is only available for Pickup. Please choose MoMo for Delivery.")
+                return
+            
+            # Save order to database
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("INSERT INTO orders (phone, item, quantity, delivery_type, location, payment_method, total_price, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                      (phone, item, quantity, delivery_type, location, "cash", total, "pending"))
+            conn.commit()
+            conn.close()
+            
+            # Notify owner
+            owner_msg = f"🔔 *NEW ORDER (CASH)*\n\n"
+            owner_msg += f"Customer: {phone}\n"
+            owner_msg += f"Item: {item.title()} x{quantity}\n"
+            owner_msg += f"Total: GHS {total}\n"
+            owner_msg += f"Type: Pickup\n"
+            owner_msg += f"Reply 'verified {phone}' when customer pays."
+            send_whatsapp_message(OWNER_NUMBER, owner_msg)
+            
+            send_whatsapp_message(phone, "⏳ Order received. Please pay GHS " + total + " in cash when you pick up. We'll confirm once payment is received.")
+            clear_state(phone)
+        else:
+            send_whatsapp_message(phone, "Please reply with 'MoMo' or 'Cash'.")
+        return
+    
+    # Customer confirming MoMo payment
+    if state == "awaiting_momo_confirmation":
+        if "yes" in text_lower:
+            item, quantity, total, delivery_type, location = data.split("|")
+            
+            # Save order to database
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("INSERT INTO orders (phone, item, quantity, delivery_type, location, payment_method, total_price, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                      (phone, item, quantity, delivery_type, location, "momo", total, "pending"))
+            conn.commit()
+            conn.close()
+            
+            # Notify owner
+            owner_msg = f"⏳ *PENDING VERIFICATION*\n\n"
+            owner_msg += f"Customer: {phone}\n"
+            owner_msg += f"Item: {item.title()} x{quantity}\n"
+            owner_msg += f"Total: GHS {total}\n"
+            owner_msg += f"Delivery: {delivery_type}"
+            if location != "N/A":
+                owner_msg += f" to {location}"
+            owner_msg += f"\n\nCheck your MoMo. If you see GHS {total}, reply:\n"
+            owner_msg += f"'verified {phone}'"
+            send_whatsapp_message(OWNER_NUMBER, owner_msg)
+            
+            send_whatsapp_message(phone, "⏳ Payment verification in progress. The owner will check their MoMo and confirm shortly. Thank you!")
+            clear_state(phone)
+        else:
+            send_whatsapp_message(phone, "Please reply YES once you've sent the money.")
         return
 
-    # 2. HANDLE TEXT MESSAGES (State-based)
-    if state["step"] == "greeting" or text_lower in ["hi", "hello", "start", "menu"]:
-        set_state(phone, "greeting")
-        send_buttons(phone, "Welcome! 🍛", "How can we serve you today?", "Powered by Aleem Tech", [
-            {"id": "view_menu", "title": "🍛 View Menu"},
-            {"id": "place_order", "title": "🛒 Place Order"}
-        ])
-
-    elif state["step"] == "taking_order":
-        set_state(phone, "ask_location", order=text)
-        send_buttons(phone, "Pickup or Delivery?", "How will you get your food?", "", [
-            {"id": "pickup", "title": "🏃 Pickup"},
-            {"id": "delivery", "title": "🛵 Delivery"}
-        ])
-
-    elif state["step"] == "ask_location_text":
-        set_state(phone, "ask_payment", location=text)
-        send_buttons(phone, "Payment Method", "How would you like to pay?", "", [
-            {"id": "cash", "title": "💵 Cash on Delivery"},
-            {"id": "momo_delivery", "title": "📱 MoMo on Delivery"},
-            {"id": "momo_now", "title": "💳 Pay Now (MoMo)"}
-        ])
-
-    else:
-        send_text(phone, "I didn't catch that. Reply 'HI' to see the menu.")
-
-# --- MAIN ROUTER ---
-def process_incoming(phone, text, button_id=None):
-    if phone == OWNER_NUMBER:
-        handle_owner_command(phone, text)
-    else:
-        handle_customer_flow(phone, text, button_id)
-
-# --- WEBHOOKS ---
+# --- WEBHOOK ENDPOINTS ---
 @app.get("/webhook")
 async def verify_webhook(request: Request):
-    mode = request.query_params.get("hub.mode")
-    token = request.query_params.get("hub.verify_token")
-    challenge = request.query_params.get("hub.challenge")
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        return Response(content=challenge, media_type="text/plain")
-    return Response(status_code=403)
+    params = request.query_params
+    if params.get("hub.verify_token") == VERIFY_TOKEN:
+        return Response(content=params.get("hub.challenge"), status_code=200)
+    return Response(content="Verification failed", status_code=403)
 
 @app.post("/webhook")
 async def handle_webhook(request: Request):
+    data = await request.json()
     try:
-        data = await request.json()
-        entry = data.get("entry", [{}])[0]
-        changes = entry.get("changes", [{}])[0]
-        value = changes.get("value", {})
-        messages = value.get("messages", [])
-        
+        entry = data.get("entry", [])[0]
+        changes = entry.get("changes", [])[0]
+        messages = changes.get("value", {}).get("messages", [])
         if messages:
             message = messages[0]
             phone = message.get("from")
-            msg_type = message.get("type")
-            
-            if msg_type == "text":
-                text = message.get("text", {}).get("body", "")
-                threading.Thread(target=process_incoming, args=(phone, text, None)).start()
-            elif msg_type == "interactive":
-                interactive = message.get("interactive", {})
-                if interactive.get("type") == "button_reply":
-                    button_id = interactive.get("button_reply", {}).get("id")
-                    threading.Thread(target=process_incoming, args=(phone, None, button_id)).start()
+            text = message.get("text", {}).get("body", "")
+            process_message(phone, text)
+    except sqlite3.OperationalError as e:
+        if "database is locked" in str(e):
+            print("⚠️ Database locked (Meta retry). Ignoring safely.")
+        else:
+            print(f"Webhook DB Error: {e}")
     except Exception as e:
-        print(f"❌ Webhook Error: {e}")
+        print(f"Webhook Error: {e}")
+    
     return {"status": "ok"}
 
+# Initialize database on startup
+init_db()
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
