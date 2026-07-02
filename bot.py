@@ -2,7 +2,7 @@
 Frank Fried WhatsApp Order Bot
 Complete tap-to-order system with cart, MoMo, and delivery.
 """
-
+from datetime import datetime, time
 import os
 import hashlib
 import hmac
@@ -25,7 +25,8 @@ APP_SECRET = os.getenv("APP_SECRET")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 OWNER_PHONE = os.getenv("OWNER_NUMBER")
-MOMO_NUMBER = os.getenv("MOMO_NUMBER")
+MOMO_MTN = os.getenv("MOMO_MTN")
+MOMO_TELECEL = os.getenv("MOMO_TELECEL")
 MOMO_NAME = os.getenv("MOMO_NAME")
 
 if not all([WHATSAPP_TOKEN, PHONE_NUMBER_ID, VERIFY_TOKEN, OWNER_PHONE]):
@@ -45,25 +46,26 @@ SESSION_TIMEOUT = 1800
 # ============================================================
 MENU = {
     "Rice Dishes": {
-        "Jollof Rice & Chicken": 45.0,
-        "Fried Rice & Beef": 50.0,
-        "Waakye Special": 35.0,
+        "Fried Rice": 30.0,
+        "Assorted Fried Rice": 60.0,
+        "Jollof Rice": 30.0,
+        "Assorted Jollof Rice": 60.0,
+        "Plain Rice & Fish": 30.0,
+        "Plain Rice & Chicken": 30.0,
+        "Plain Rice & Egg": 20.0,
     },
-    "Pasta": {
-        "Spaghetti Bolognese": 40.0,
-        "Mac & Cheese": 35.0,
+    "Waakye": {
+        "Waakye & Chicken": 30.0,
+        "Waakye & Fish": 30.0,
+        "Waakye & Egg": 20.0,
     },
-    "Specials": {
-        "Frank Fried Bucket": 120.0,
-        "Spicy Wings": 60.0,
-    },
-    "Drinks": {
-        "Coca Cola": 10.0,
-        "Water": 5.0,
-        "Malt": 12.0,
-    },
+    "Noodles & Pasta": {
+        "Spaghetti & Chicken": 30.0,
+        "Assorted Spaghetti": 40.0,
+        "Indomie & Chicken": 30.0,
+        "Assorted Indomie": 50.0,
+    }
 }
-
 # Flat lookup: item_name -> price (built once at startup)
 PRICE_LOOKUP = {}
 for category, items in MENU.items():
@@ -208,9 +210,20 @@ def screen_main_menu(phone: str):
             ],
         }
     ]
-    send_list(phone, "🍗 *Welcome to Frank Fried!*\n\nWhat are you craving today?", "View Menu", sections)
+    
+    # --- UPDATED WELCOME MESSAGE ---
+    send_list(
+        phone, 
+        "🍗 *Welcome to Frank Fried!*\n\n"
+        "📍 Ben-Barquarye St (Old St. Francis)\n"
+        "🕐 7am-10pm Mon-Sat\n"
+        "🚚 Delivery 8am-3pm\n\n"
+        "What are you craving today?", 
+        "View Menu", 
+        sections
+    )
+    
     set_state(phone, "MAIN_MENU")
-
 
 def screen_category_items(phone: str, category: str):
     """Show items in a category with prices."""
@@ -317,8 +330,9 @@ def screen_momo_details(phone: str):
     momo_msg = (
         f"📱 *Mobile Money Payment*\n\n"
         f"Send *GHS {total:.2f}* to:\n\n"
-        f"👤 *Name:* {MOMO_NAME}\n"
-        f"📞 *Number:* {MOMO_NUMBER}\n\n"
+        f"👤 *Name:* {MOMO_NAME}\n\n"
+        f"🟡 *MTN:* {MOMO_MTN}\n"
+        f"🔴 *Telecel:* {MOMO_TELECEL}\n\n"
         f"Tap below after sending payment."
     )
     send_text(phone, momo_msg)
@@ -328,7 +342,6 @@ def screen_momo_details(phone: str):
         {"id": "nav_back_pay", "title": "⬅ Back"},
     ])
     set_state(phone, "AWAITING_MOMO_CONFIRM")
-
 
 # ============================================================
 # 6. BUSINESS LOGIC
@@ -472,14 +485,34 @@ def handle_button_reply(phone: str, reply_id: str, current_state: str):
             ctx["order_type"] = "Pickup"
             set_state(phone, "PAYMENT_METHOD", context=ctx)
             return screen_payment_method(phone)
+            
         if reply_id == "type_delivery":
+            # --- SECURITY & LOGIC: ENFORCE DELIVERY HOURS ---
+            current_time = datetime.now().time()
+            delivery_start = time(8, 0)   # 08:00 AM
+            delivery_end = time(15, 0)    # 03:00 PM (15:00 in 24hr format)
+            
+            if not (delivery_start <= current_time <= delivery_end):
+                send_text(
+                    phone, 
+                    "⚠️ *Delivery Unavailable*\n\n"
+                    "Frank Fried delivery is only available from *8:00 AM to 3:00 PM*.\n\n"
+                    "Please select *Pickup* or try again during delivery hours!"
+                )
+                return screen_checkout_type(phone) # Keep them on this screen
+
+            # If time is valid, proceed to address
             state = get_state(phone)
             ctx = state["context"]
             ctx["order_type"] = "Delivery"
             set_state(phone, "AWAITING_ADDRESS", context=ctx)
-            send_text(phone, "📍 Please reply with your *delivery address*.\n\nExample: _East Legon, near A&C Mall_")
+            
+            send_text(
+                phone, 
+                "📍 Please reply with your *delivery address*.\n\n"
+                "🛵 *Note:* Delivery charges apply, but you get discounts on multiple orders!"
+            )
             return
-
     # --- PAYMENT METHOD ---
     if current_state == "PAYMENT_METHOD":
         if reply_id == "nav_back_type":
