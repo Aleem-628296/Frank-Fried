@@ -215,7 +215,7 @@ def screen_main_menu(phone: str):
     send_list(
         phone, 
         "🍗 *Welcome to Frank Fried!*\n\n"
-        "📍 Ben-Barquarye St (Old St. Francis)\n"
+        "📍 Ben-Barquarye Street (Old St. Francis)\n"
         "🕐 7am-10pm Mon-Sat\n"
         "🚚 Delivery 8am-3pm\n\n"
         "What are you craving today?", 
