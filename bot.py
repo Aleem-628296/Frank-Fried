@@ -2,7 +2,7 @@
 Frank Fried WhatsApp Order Bot
 Complete tap-to-order system with cart, MoMo, and delivery.
 """
-from datetime import datetime, time
+import datetime
 import os
 import hashlib
 import hmac
@@ -376,7 +376,7 @@ def finalize_order(phone: str):
         confirm += f"📍 *Address:* {ctx.get('address', 'N/A')}\n"
     confirm += f"💳 *Payment:* {ctx.get('payment', 'N/A')}\n"
     if ctx.get("payment") == "Mobile Money":
-        confirm += f"📞 *MoMo:* {MOMO_NUMBER}\n"
+        confirm += f"🟡 *MTN:* {MOMO_MTN}\n🔴 *Telecel:* {MOMO_TELECEL}\n"
     confirm += "\nThank you for ordering from Frank Fried! 🍗"
 
     send_text(phone, confirm)
@@ -494,6 +494,35 @@ def handle_button_reply(phone: str, reply_id: str, current_state: str):
             return screen_payment_method(phone)
             
         if reply_id == "type_delivery":
+        if reply_id == "type_delivery":
+            # --- SECURITY & LOGIC: ENFORCE DELIVERY HOURS ---
+            # Use datetime.datetime to avoid colliding with the 'time' module
+            current_time = datetime.datetime.now().time()
+            delivery_start = datetime.time(8, 0)   # 08:00 AM
+            delivery_end = datetime.time(15, 0)    # 03:00 PM
+            
+            if not (delivery_start <= current_time <= delivery_end):
+                send_text(
+                    phone, 
+                    "⚠️ *Delivery Unavailable*\n\n"
+                    "Frank Fried delivery is only available from *8:00 AM to 3:00 PM*.\n\n"
+                    "Please select *Pickup* or try again during delivery hours!"
+                )
+                return screen_checkout_type(phone)
+
+            # If time is valid, proceed to address
+            state = get_state(phone)
+            ctx = state["context"]
+            ctx["order_type"] = "Delivery"
+            set_state(phone, "AWAITING_ADDRESS", context=ctx)
+            
+            send_text(
+                phone, 
+                "📍 Please reply with your *delivery address*.\n\n"
+                "🛵 *Note:* Delivery charges apply, but you get discounts on multiple orders!"
+            )
+            return
+
             # --- SECURITY & LOGIC: ENFORCE DELIVERY HOURS ---
             current_time = datetime.now().time()
             delivery_start = time(8, 0)   # 08:00 AM
