@@ -466,15 +466,22 @@ def handle_button_reply(phone: str, reply_id: str, current_state: str):
     if current_state == "CART_ACTIONS":
         if reply_id == "cart_add_more":
             return screen_main_menu(phone)
+            
         if reply_id == "cart_checkout":
             state = get_state(phone)
             if not state["cart"]:
                 send_text(phone, "🛒 Your cart is empty! Add items first.")
                 return screen_main_menu(phone)
+                
+            # --- FIX: Calculate total immediately upon checkout ---
+            _, total = build_order_summary(state["cart"])
+            state["context"]["total"] = total
+            set_state(phone, "CHECKOUT_TYPE", context=state["context"])
+            
             return screen_checkout_type(phone)
+            
         if reply_id == "cart_remove":
             return screen_remove_item(phone)
-
     # --- CHECKOUT TYPE ---
     if current_state == "CHECKOUT_TYPE":
         if reply_id == "nav_back_cart":
