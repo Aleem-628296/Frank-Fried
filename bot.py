@@ -616,6 +616,13 @@ def handle_text_message(phone: str, text: str, current_state: str):
         reset_state(phone)
         return screen_main_menu(phone)
 
+ # Direct test to Frank (OWNER)
+    if phone == OWNER_PHONE and text_lower == "test":
+        logger.info(f"[TEST] Sending test message to OWNER_PHONE: {OWNER_PHONE}")
+        send_text(OWNER_PHONE, "🧪 TEST: Frank, if you see this, the bot can reach you!")
+        logger.info(f"[TEST] Message sent successfully")
+        return
+
     if text_lower in ("cart", "my cart", "view cart"):
         state = get_state(phone)
         if state["cart"]:
