@@ -1,6 +1,7 @@
 # Frank Fried Kitchen — WhatsApp Order Bot
 
 A live WhatsApp ordering system built for **Frank Fried Kitchen**, a food vendor in  Accra, Ghana.
+🌐 **Live Demo:** [waakye-bot.onrender.com](https://waakye-bot.onrender.com)
 
 ## What It Does
 - Customers message the business on WhatsApp and receive an interactive menu with clickable buttons
